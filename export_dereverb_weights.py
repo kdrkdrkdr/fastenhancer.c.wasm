@@ -66,20 +66,21 @@ def export(args):
     with open(params_path) as f:
         params = json.load(f)
 
-    # Determine model files
-    if config == "CI":
-        wpe_model_path = os.path.join(repo_dir, params["wpe_model_path_CI"])
-        pf_model_path = os.path.join(repo_dir, params["pf_model_path_CI"])
-        wpe_stats_dir = os.path.join(repo_dir, "stats", "reverberant")
-        pf_stats_dir = os.path.join(repo_dir, "stats", "processed_CI")
-    elif config == "HA":
-        wpe_model_path = os.path.join(repo_dir, params["wpe_model_path_HA"])
-        pf_model_path = os.path.join(repo_dir, params["pf_model_path_HA"])
-        wpe_stats_dir = os.path.join(repo_dir, "stats", "reverberant")
-        pf_stats_dir = os.path.join(repo_dir, "stats", "processed_HA")
-    else:
-        print(f"ERROR: Unknown config '{config}'. Use 'CI' or 'HA'.")
+    # Determine model files from nested JSON structure
+    # Config keys: "wpe+pf_ci", "wpe+pf_ha" (full pipeline with Wiener PF)
+    config_key = f"wpe+pf_{config.lower()}"
+    if config_key not in params:
+        print(f"ERROR: Config key '{config_key}' not found in derev_params.json")
+        print(f"       Available keys: {list(params.keys())}")
         sys.exit(1)
+
+    cfg = params[config_key]
+    wpe_model_path = os.path.join(repo_dir, cfg["dnn_wpe"]["ckpt"])
+    pf_model_path = os.path.join(repo_dir, cfg["dnn_pf"]["ckpt"])
+
+    # Stats paths use {} format pattern for mean/std
+    wpe_stats_pattern = cfg["dnn_wpe"]["stats"]  # e.g. "stats/reverberant/tr_{}_noiseless_reverberant_abs.pt"
+    pf_stats_pattern = cfg["dnn_pf"]["stats"]
 
     # Check files exist
     for path in [wpe_model_path, pf_model_path]:
@@ -88,7 +89,7 @@ def export(args):
             print(f"       Download models from the 2sderev repository.")
             sys.exit(1)
 
-    print(f"Config: {config}")
+    print(f"Config: {config} ({config_key})")
     print(f"WPE model: {wpe_model_path}")
     print(f"PF model:  {pf_model_path}")
 
@@ -96,15 +97,21 @@ def export(args):
     wpe_sd = torch.load(wpe_model_path, map_location='cpu', weights_only=True)
     pf_sd = torch.load(pf_model_path, map_location='cpu', weights_only=True)
 
-    # Load normalization stats
-    wpe_mean = torch.load(os.path.join(wpe_stats_dir,
-        "tr_mean_noiseless_reverberant_abs.pt"), map_location='cpu', weights_only=True)
-    wpe_std = torch.load(os.path.join(wpe_stats_dir,
-        "tr_std_noiseless_reverberant_abs.pt"), map_location='cpu', weights_only=True)
-    pf_mean = torch.load(os.path.join(pf_stats_dir,
-        "tr_mean_noiseless_reverberant_abs.pt"), map_location='cpu', weights_only=True)
-    pf_std = torch.load(os.path.join(pf_stats_dir,
-        "tr_std_noiseless_reverberant_abs.pt"), map_location='cpu', weights_only=True)
+    # Load normalization stats (pattern uses {} for mean/std)
+    wpe_mean_path = os.path.join(repo_dir, wpe_stats_pattern.format("mean"))
+    wpe_std_path = os.path.join(repo_dir, wpe_stats_pattern.format("std"))
+    pf_mean_path = os.path.join(repo_dir, pf_stats_pattern.format("mean"))
+    pf_std_path = os.path.join(repo_dir, pf_stats_pattern.format("std"))
+
+    for path in [wpe_mean_path, wpe_std_path, pf_mean_path, pf_std_path]:
+        if not os.path.exists(path):
+            print(f"ERROR: Stats file not found: {path}")
+            sys.exit(1)
+
+    wpe_mean = torch.load(wpe_mean_path, map_location='cpu', weights_only=True)
+    wpe_std = torch.load(wpe_std_path, map_location='cpu', weights_only=True)
+    pf_mean = torch.load(pf_mean_path, map_location='cpu', weights_only=True)
+    pf_std = torch.load(pf_std_path, map_location='cpu', weights_only=True)
 
     print(f"\nWPE DNN keys: {list(wpe_sd.keys())}")
     print(f"PF DNN keys:  {list(pf_sd.keys())}")

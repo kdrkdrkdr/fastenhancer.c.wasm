@@ -10,6 +10,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_DIR="$SCRIPT_DIR/src"
 WEIGHT_FILE="$SCRIPT_DIR/weights/fe_tiny.bin"
+DEREV_WEIGHT_FILE="$SCRIPT_DIR/weights/derev_wpe.bin"
 OUTPUT_FILE="$SCRIPT_DIR/fastenhancer-worklet.js"
 LOADER_FILE="$SCRIPT_DIR/fe-loader.js"
 
@@ -123,7 +124,16 @@ echo "[4/4] Generating worklet file..."
 
 # Encode weights as Base64
 WEIGHT_B64=$(base64 < "$WEIGHT_FILE" | tr -d '\n')
-echo "  -> Weight Base64: ${#WEIGHT_B64} chars"
+echo "  -> Denoise Weight Base64: ${#WEIGHT_B64} chars"
+
+# Encode dereverb weights if available
+DEREV_B64=""
+if [ -f "$DEREV_WEIGHT_FILE" ]; then
+    DEREV_B64=$(base64 < "$DEREV_WEIGHT_FILE" | tr -d '\n')
+    echo "  -> Dereverb Weight Base64: ${#DEREV_B64} chars"
+else
+    echo "  -> Dereverb weights not found (dereverb disabled)"
+fi
 
 cat > "$OUTPUT_FILE" << 'WORKLET_HEADER'
 /**
@@ -188,6 +198,7 @@ cat >> "$OUTPUT_FILE" << WORKLET_WEIGHTS
 // ============================================================================
 
 const FE_WEIGHTS_B64 = "${WEIGHT_B64}";
+const DR_WEIGHTS_B64 = "${DEREV_B64}";
 
 WORKLET_WEIGHTS
 
@@ -218,20 +229,28 @@ function b64ToUint8(b64str) {
 // ============================================================================
 
 class FEProcessor {
-    constructor(wasm, weightBytes) {
+    constructor(wasm, weightBytes, derevWeightBytes) {
         this.wasm = wasm;
 
-        // Copy weights to WASM heap
+        // Copy denoise weights to WASM heap
         const weightPtr = wasm._malloc(weightBytes.length);
         wasm.HEAPU8.set(weightBytes, weightPtr);
 
+        // Copy dereverb weights if available
+        let derevPtr = 0, derevSize = 0;
+        if (derevWeightBytes && derevWeightBytes.length > 0) {
+            derevPtr = wasm._malloc(derevWeightBytes.length);
+            wasm.HEAPU8.set(derevWeightBytes, derevPtr);
+            derevSize = derevWeightBytes.length;
+        }
+
         // Initialize: fe_init(denoise_data, denoise_size, dereverb_data, dereverb_size)
-        // No dereverb weights yet (pass 0, 0)
-        const ret = wasm._fe_init(weightPtr, weightBytes.length, 0, 0);
+        const ret = wasm._fe_init(weightPtr, weightBytes.length, derevPtr, derevSize);
         if (ret !== 0) throw new Error('fe_init failed');
 
         // Weight data must remain alive (engine holds pointers into it)
         this.weightPtr = weightPtr;
+        this.derevPtr = derevPtr;
 
         // Enable HPF + AGC pipeline
         wasm._fe_set_hpf(1);
@@ -301,7 +320,8 @@ class FastEnhancerWorklet extends AudioWorkletProcessor {
         try {
             const wasm = await createFEModule();
             const weightBytes = b64ToUint8(FE_WEIGHTS_B64);
-            this.proc = new FEProcessor(wasm, weightBytes);
+            const derevBytes = DR_WEIGHTS_B64 ? b64ToUint8(DR_WEIGHTS_B64) : null;
+            this.proc = new FEProcessor(wasm, weightBytes, derevBytes);
             this.ready = true;
             this.port.postMessage('ready');
         } catch (e) {
