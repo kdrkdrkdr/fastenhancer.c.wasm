@@ -214,14 +214,38 @@ const INT16_SCALE = 32767;
 const POOL_MASK = 3;
 
 // ============================================================================
-// Base64 → Uint8Array decoder
+// Base64 → Uint8Array decoder (direct, no atob dependency)
+// Handles arbitrarily large strings without stack overflow.
 // ============================================================================
 
+const B64_LOOKUP = new Uint8Array(128);
+{
+    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    for (let i = 0; i < chars.length; i++) B64_LOOKUP[chars.charCodeAt(i)] = i;
+}
+
 function b64ToUint8(b64str) {
-    const raw = atob(b64str);
-    const arr = new Uint8Array(raw.length);
-    for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
-    return arr;
+    if (!b64str || b64str.length === 0) return new Uint8Array(0);
+
+    // Calculate output length accounting for padding
+    let len = b64str.length;
+    let pad = 0;
+    if (b64str.charCodeAt(len - 1) === 61) pad++;  // '='
+    if (b64str.charCodeAt(len - 2) === 61) pad++;
+    const outLen = (len * 3 >> 2) - pad;
+    const out = new Uint8Array(outLen);
+
+    let j = 0;
+    for (let i = 0; i < len; i += 4) {
+        const a = B64_LOOKUP[b64str.charCodeAt(i)];
+        const b = B64_LOOKUP[b64str.charCodeAt(i + 1)];
+        const c = B64_LOOKUP[b64str.charCodeAt(i + 2)];
+        const d = B64_LOOKUP[b64str.charCodeAt(i + 3)];
+        out[j++] = (a << 2) | (b >> 4);
+        if (j < outLen) out[j++] = ((b & 15) << 4) | (c >> 2);
+        if (j < outLen) out[j++] = ((c & 3) << 6) | d;
+    }
+    return out;
 }
 
 // ============================================================================
